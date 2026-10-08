@@ -7,7 +7,7 @@ import {
 const router = express.Router();
 
 router.post(
-  "/register",
+  "/participateRegister",
   uploadVideo.single("video"),
   registerParticipant
 );

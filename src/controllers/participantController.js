@@ -1,4 +1,5 @@
 import { prisma } from "../config/prisma.js";
+import fs from "fs";
 
 function generateRegistrationNumber() {
   const timestamp = Date.now().toString().slice(-6);
@@ -22,7 +23,7 @@ export async function registerParticipant(req, res) {
       consent,
     } = req.body;
 
-    // Basic validation
+    // Required fields
     if (!fullName?.trim()) {
       return res.status(400).json({
         success: false,
@@ -59,9 +60,9 @@ export async function registerParticipant(req, res) {
     }
 
     const allowedCategories = [
-      "SINGING",
-      "DANCING",
-      "STANDUP_COMEDY",
+      "singing",
+      "dancing",
+      "stand-up-comedy",
     ];
 
     if (!allowedCategories.includes(talentCategory)) {
@@ -71,7 +72,7 @@ export async function registerParticipant(req, res) {
       });
     }
 
-    // Require video
+    // Video required
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -114,13 +115,13 @@ export async function registerParticipant(req, res) {
 
     return res.status(201).json({
       success: true,
-      message: "Registration completed successfully.",
-
+      message: "Participant registration completed successfully.",
       data: {
         id: participant.id,
         registrationNumber: participant.registrationNumber,
         fullName: participant.fullName,
         email: participant.email,
+        phone: participant.phone,
         talentCategory: participant.talentCategory,
         status: participant.status,
         videoUrl: participant.videoUrl,
@@ -130,20 +131,21 @@ export async function registerParticipant(req, res) {
   } catch (error) {
     console.error("Participant registration error:", error);
 
-    // Remove uploaded file if database insertion fails
+    // Delete uploaded video if DB insert fails
     if (req.file) {
-      const fs = await import("fs");
-
       try {
         fs.unlinkSync(req.file.path);
-      } catch {
-        // Ignore cleanup errors
+      } catch (cleanupError) {
+        console.error(
+          "Video cleanup failed:",
+          cleanupError
+        );
       }
     }
 
     return res.status(500).json({
       success: false,
-      message: "Unable to complete registration.",
+      message: "Unable to complete participant registration.",
     });
   }
 }
