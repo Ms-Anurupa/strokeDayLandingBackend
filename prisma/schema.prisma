@@ -1,0 +1,47 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TalentCategory {
+  SINGING
+  DANCING
+  STANDUP_COMEDY
+}
+
+enum RegistrationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Participant {
+  id                  String             @id @default(cuid())
+  registrationNumber  String             @unique
+
+  fullName            String
+  email               String
+  phone               String
+
+  age                 Int?
+  gender              String?
+  city                String?
+
+  talentCategory      TalentCategory
+  performanceTitle    String?
+  performanceDuration Int?
+
+  videoOriginalName   String?
+  videoUrl            String?
+  videoMimeType       String?
+  videoSize           Int?
+
+  status              RegistrationStatus @default(PENDING)
+  consent             Boolean            @default(false)
+
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+}
