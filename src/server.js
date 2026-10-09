@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import participantRoutes from "./routes/participantRoutes.js";
 import attendeeRoutes from "./routes/attendeeRoutes.js";
+import adminRoutes from "./routes/adminRoutes.js";
 
 const app = express();
 
@@ -13,6 +14,8 @@ app.use(
         origin: [
             "http://localhost:5173",
             "http://127.0.0.1:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5174",
         ],
         credentials: true,
     })
@@ -22,12 +25,14 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+
 // Static uploads
 app.use("/uploads", express.static("uploads"));
 
 // Routes
 app.use("/participants", participantRoutes);
 app.use("/attendees", attendeeRoutes);
+app.use("/admin", adminRoutes);
 
 // Health check
 app.get("/", (req, res) => {
