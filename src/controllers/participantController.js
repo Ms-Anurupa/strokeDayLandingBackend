@@ -62,7 +62,7 @@ export async function registerParticipant(req, res) {
     const allowedCategories = [
       "singing",
       "dancing",
-      "stand-up-comedy",
+      "stand_up_comedy",
     ];
 
     if (!allowedCategories.includes(talentCategory)) {

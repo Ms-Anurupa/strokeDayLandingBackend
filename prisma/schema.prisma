@@ -7,9 +7,9 @@ datasource db {
 }
 
 enum TalentCategory {
-  SINGING
-  DANCING
-  STANDUP_COMEDY
+  singing
+  dancing
+  stand_up_comedy
 }
 
 enum RegistrationStatus {
