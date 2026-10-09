@@ -149,3 +149,31 @@ export async function registerParticipant(req, res) {
     });
   }
 }
+
+
+export const getAllParticipants = async (req, res) => {
+  try {
+    const participants = await prisma.participant.findMany({
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: participants.length,
+      data: participants,
+    });
+  } catch (error) {
+    console.error("Get all participants error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch participants",
+      error:
+        process.env.NODE_ENV === "development"
+          ? error.message
+          : "Internal server error",
+    });
+  }
+};

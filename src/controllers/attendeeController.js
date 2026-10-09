@@ -80,3 +80,29 @@ export const registerAttendee = async (req, res) => {
     });
   }
 };
+
+
+
+export const getAllAttendees = async (req, res) => {
+  try {
+    const attendees = await prisma.attendee.findMany({
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: attendees.length,
+      data: attendees,
+    });
+  } catch (error) {
+    console.error("Get all attendees error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch attendees",
+      error: error.message,
+    });
+  }
+}
