@@ -1,44 +1,42 @@
+import { z } from "zod";
 import { prisma } from "../config/prisma.js";
+
+const attendeeSchema = z.object({
+  name: z.string().trim().min(2).max(80),
+  email: z.string().trim().toLowerCase().email().max(254),
+  phone: z
+    .string()
+    .trim()
+    .transform((value) => value.replace(/[\s-]/g, "").replace(/^(\+91|0)/, ""))
+    .refine((value) => /^[6-9]\d{9}$/.test(value), "Invalid phone"),
+  consent: z.literal(true),
+});
 
 export const registerAttendee = async (req, res) => {
   try {
-    const { name, email, phone, consent } = req.body ?? {};
+    const parsed = attendeeSchema.safeParse(req.body ?? {});
 
-    if (
-      typeof name !== "string" ||
-      !name.trim() ||
-      typeof email !== "string" ||
-      !email.trim() ||
-      typeof phone !== "string" ||
-      !phone.trim()
-    ) {
+    if (!parsed.success) {
+      const consentMissing = parsed.error.issues.some(
+        (issue) => issue.path[0] === "consent"
+      );
+
       return res.status(400).json({
         success: false,
-        message: "Name, email and phone are required.",
+        message: consentMissing
+          ? "You must accept the invitation terms to continue."
+          : "Please provide a valid name, email and 10-digit mobile number.",
       });
     }
 
-    // Consent is required to proceed
-    if (consent !== true) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "You must accept the invitation terms to continue.",
-      });
-    }
-
-    const cleanName = name.trim();
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanPhone = phone.trim();
+    const { name, email, phone } = parsed.data;
 
     // Check for duplicate email or phone
     const existingAttendee = await prisma.attendee.findFirst({
       where: {
-        OR: [
-          { email: cleanEmail },
-          { phone: cleanPhone },
-        ],
+        OR: [{ email }, { phone }],
       },
+      select: { id: true },
     });
 
     if (existingAttendee) {
@@ -52,12 +50,11 @@ export const registerAttendee = async (req, res) => {
     const registrationNumber =
       `ATT-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
 
-    // Save only fields defined in the Prisma Attendee model
     const attendee = await prisma.attendee.create({
       data: {
-        name: cleanName,
-        email: cleanEmail,
-        phone: cleanPhone,
+        name,
+        email,
+        phone,
         registrationNumber,
       },
     });
@@ -65,7 +62,11 @@ export const registerAttendee = async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "Attendee registered successfully.",
-      data: attendee,
+      data: {
+        registrationNumber: attendee.registrationNumber,
+        name: attendee.name,
+        createdAt: attendee.createdAt,
+      },
     });
   } catch (error) {
     console.error("Attendee registration error:", error);
@@ -73,15 +74,9 @@ export const registerAttendee = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to register attendee.",
-      error:
-        process.env.NODE_ENV === "development"
-          ? error.message
-          : "Internal server error",
     });
   }
 };
-
-
 
 export const getAllAttendees = async (req, res) => {
   try {
@@ -102,7 +97,6 @@ export const getAllAttendees = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch attendees",
-      error: error.message,
     });
   }
-}
+};

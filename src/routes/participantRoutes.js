@@ -1,5 +1,6 @@
 import express from "express";
-import { uploadVideo } from "../middleware/upload.js";
+import { handleVideoUpload } from "../middleware/upload.js";
+import { requireAdmin } from "../middleware/authMiddleware.js";
 import {
   getAllParticipants,
   registerParticipant,
@@ -7,12 +8,12 @@ import {
 
 const router = express.Router();
 
-router.get("/getAllParticipants", getAllParticipants);
-// router.get("/:id", getParticipantById);
+// Returns personal data, so admin only.
+router.get("/getAllParticipants", requireAdmin, getAllParticipants);
 
 router.post(
   "/participateRegister",
-  uploadVideo.single("video"),
+  handleVideoUpload("video"),
   registerParticipant
 );
 

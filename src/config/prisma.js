@@ -2,7 +2,6 @@ import "dotenv/config";
 import pg from "pg";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { parse } from "pg-connection-string";
 
 const { Pool } = pg;
 
@@ -14,19 +13,9 @@ if (!connectionString) {
   );
 }
 
-const config = parse(connectionString);
-
-if (
-  typeof config.password !== "string" ||
-  config.password.length === 0
-) {
-  throw new Error(
-    "PostgreSQL password is missing or invalid. Check DATABASE_URL."
-  );
-}
-
 const pool = new Pool({
   connectionString,
+  max: Number(process.env.DB_POOL_MAX) || 10,
 });
 
 pool.on("error", (error) => {

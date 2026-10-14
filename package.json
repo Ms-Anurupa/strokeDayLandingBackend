@@ -4,10 +4,12 @@
   "description": "",
   "main": "src/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node src/server.js",
-    "postinstall": "prisma skills sync || exit 0",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "postinstall": "prisma generate",
+    "migrate:deploy": "prisma migrate deploy",
+    "create-admin": "node scripts/createAdmin.js",
+    "rename-videos": "node scripts/renameExistingVideos.js"
   },
   "keywords": [],
   "author": "",
@@ -20,13 +22,18 @@
     "cors": "^2.8.6",
     "dotenv": "^18.0.6",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.4.0",
     "pg": "^8.23.1",
+    "prisma": "^7.10.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14",
-    "prisma": "^7.10.0"
+    "nodemon": "^3.1.14"
+  },
+  "engines": {
+    "node": ">=20.19"
   }
 }

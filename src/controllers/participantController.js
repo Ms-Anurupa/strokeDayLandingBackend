@@ -1,5 +1,8 @@
+import { z } from "zod";
 import { prisma } from "../config/prisma.js";
 import fs from "fs";
+import path from "path";
+import { videoMimeType } from "../middleware/upload.js";
 
 function generateRegistrationNumber() {
   const timestamp = Date.now().toString().slice(-6);
@@ -8,106 +11,173 @@ function generateRegistrationNumber() {
   return `GGT26-${timestamp}${random}`;
 }
 
+// The landing page uses "stand-up-comedy"; the database enum uses "stand_up_comedy".
+const CATEGORY_ALIASES = {
+  singing: "singing",
+  dancing: "dancing",
+  "stand-up-comedy": "stand_up_comedy",
+  stand_up_comedy: "stand_up_comedy",
+};
+
+const optionalInt = (min, max) =>
+  z.preprocess(
+    (value) => (value === "" || value === undefined || value === null ? null : value),
+    z.coerce.number().int().min(min).max(max).nullable()
+  );
+
+const optionalText = (max) =>
+  z.preprocess(
+    (value) => (typeof value === "string" && value.trim() ? value : null),
+    z.string().trim().max(max).nullable()
+  );
+
+const participantSchema = z.object({
+  fullName: z.string({ error: "Full name is required." }).trim().min(2, "Full name is required.").max(80),
+  email: z
+    .string({ error: "A valid email is required." })
+    .trim()
+    .toLowerCase()
+    .email("A valid email is required.")
+    .max(254),
+  phone: z
+    .string({ error: "A valid 10-digit mobile number is required." })
+    .trim()
+    .transform((value) => value.replace(/[\s-]/g, "").replace(/^(\+91|0)/, ""))
+    .refine(
+      (value) => /^[6-9]\d{9}$/.test(value),
+      "A valid 10-digit mobile number is required."
+    ),
+  age: optionalInt(Number(process.env.MIN_PARTICIPANT_AGE) || 1, 100),
+  gender: optionalText(30),
+  city: optionalText(80),
+  talentCategory: z
+    .string({ error: "Talent category is required." })
+    .transform((value) => CATEGORY_ALIASES[value])
+    .refine(Boolean, "Invalid talent category."),
+  performanceTitle: optionalText(150),
+  performanceDuration: optionalInt(1, 600),
+  videoLink: optionalText(500),
+  consent: z.union([z.literal(true), z.literal("true")], {
+    error: "Consent is required.",
+  }),
+});
+
+function removeUploadedFile(file) {
+  if (!file) return;
+
+  try {
+    fs.unlinkSync(file.path);
+  } catch (cleanupError) {
+    console.error("Video cleanup failed:", cleanupError.message);
+  }
+}
+
+/**
+ * Renames an uploaded video to "<name><last 4 digits of phone>.<ext>",
+ * e.g. "Shibnath Das" + 8967947523 -> "shibnathdas7523.mp4".
+ * A number is added if that name is already taken ("shibnathdas7523-2.mp4").
+ */
+export function videoFileName(currentFilename, directory, fullName, phone) {
+  const base =
+    fullName
+      .normalize("NFKD")
+      .replace(/[^a-zA-Z0-9]/g, "")
+      .toLowerCase()
+      .slice(0, 40) || "participant";
+  const stem = `${base}${String(phone).slice(-4)}`;
+  const extension = path.extname(currentFilename).toLowerCase() || ".mp4";
+
+  let filename = `${stem}${extension}`;
+  for (let n = 2; fs.existsSync(path.join(directory, filename)); n += 1) {
+    filename = `${stem}-${n}${extension}`;
+  }
+  return filename;
+}
+
+export function renameUploadedVideo(file, fullName, phone) {
+  const directory = path.dirname(file.path);
+  const filename = videoFileName(file.filename, directory, fullName, phone);
+  const target = path.join(directory, filename);
+  fs.renameSync(file.path, target);
+
+  // Keep multer's record in sync so cleanup on failure deletes the right file.
+  file.filename = filename;
+  file.path = target;
+}
+
+function registrationClosed() {
+  const closesAt = process.env.PARTICIPANT_REGISTRATION_CLOSES_AT;
+  if (!closesAt) return false;
+
+  const deadline = new Date(closesAt);
+  return !Number.isNaN(deadline.getTime()) && Date.now() > deadline.getTime();
+}
+
 export async function registerParticipant(req, res) {
   try {
-    const {
-      fullName,
-      email,
-      phone,
-      age,
-      gender,
-      city,
-      talentCategory,
-      performanceTitle,
-      performanceDuration,
-      consent,
-    } = req.body;
-
-    // Required fields
-    if (!fullName?.trim()) {
-      return res.status(400).json({
+    if (registrationClosed()) {
+      removeUploadedFile(req.file);
+      return res.status(403).json({
         success: false,
-        message: "Full name is required.",
+        message: "Participant registrations are closed.",
       });
     }
 
-    if (!email?.trim()) {
+    const parsed = participantSchema.safeParse(req.body ?? {});
+
+    if (!parsed.success) {
+      removeUploadedFile(req.file);
       return res.status(400).json({
         success: false,
-        message: "Email is required.",
+        message: parsed.error.issues[0]?.message || "Invalid registration details.",
       });
     }
 
-    if (!phone?.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: "Phone number is required.",
-      });
-    }
+    const data = parsed.data;
 
-    if (!talentCategory) {
-      return res.status(400).json({
-        success: false,
-        message: "Talent category is required.",
-      });
-    }
+    // Either an uploaded video or a public link (YouTube, Drive, etc.) is required.
+    let video;
 
-    if (consent !== "true" && consent !== true) {
-      return res.status(400).json({
-        success: false,
-        message: "Consent is required.",
-      });
-    }
+    if (req.file) {
+      renameUploadedVideo(req.file, data.fullName, data.phone);
 
-    const allowedCategories = [
-      "singing",
-      "dancing",
-      "stand_up_comedy",
-    ];
-
-    if (!allowedCategories.includes(talentCategory)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid talent category.",
-      });
-    }
-
-    // Video required
-    if (!req.file) {
+      video = {
+        videoOriginalName: req.file.originalname?.slice(0, 255) || null,
+        videoUrl: `/uploads/videos/${req.file.filename}`,
+        videoMimeType: videoMimeType(req.file),
+        videoSize: req.file.size,
+      };
+    } else if (data.videoLink && /^https?:\/\/\S+\.\S+/i.test(data.videoLink)) {
+      video = {
+        videoOriginalName: null,
+        videoUrl: data.videoLink,
+        videoMimeType: null,
+        videoSize: null,
+      };
+    } else {
       return res.status(400).json({
         success: false,
         message: "Performance video is required.",
       });
     }
 
-    const registrationNumber = generateRegistrationNumber();
-
     const participant = await prisma.participant.create({
       data: {
-        registrationNumber,
+        registrationNumber: generateRegistrationNumber(),
 
-        fullName: fullName.trim(),
-        email: email.trim().toLowerCase(),
-        phone: phone.trim(),
+        fullName: data.fullName,
+        email: data.email,
+        phone: data.phone,
 
-        age: age ? Number(age) : null,
-        gender: gender || null,
-        city: city || null,
+        age: data.age,
+        gender: data.gender,
+        city: data.city,
 
-        talentCategory,
+        talentCategory: data.talentCategory,
+        performanceTitle: data.performanceTitle,
+        performanceDuration: data.performanceDuration,
 
-        performanceTitle:
-          performanceTitle?.trim() || null,
-
-        performanceDuration:
-          performanceDuration
-            ? Number(performanceDuration)
-            : null,
-
-        videoOriginalName: req.file.originalname,
-        videoUrl: `/uploads/videos/${req.file.filename}`,
-        videoMimeType: req.file.mimetype,
-        videoSize: req.file.size,
+        ...video,
 
         consent: true,
       },
@@ -117,14 +187,10 @@ export async function registerParticipant(req, res) {
       success: true,
       message: "Participant registration completed successfully.",
       data: {
-        id: participant.id,
         registrationNumber: participant.registrationNumber,
         fullName: participant.fullName,
-        email: participant.email,
-        phone: participant.phone,
         talentCategory: participant.talentCategory,
         status: participant.status,
-        videoUrl: participant.videoUrl,
         createdAt: participant.createdAt,
       },
     });
@@ -132,16 +198,7 @@ export async function registerParticipant(req, res) {
     console.error("Participant registration error:", error);
 
     // Delete uploaded video if DB insert fails
-    if (req.file) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (cleanupError) {
-        console.error(
-          "Video cleanup failed:",
-          cleanupError
-        );
-      }
-    }
+    removeUploadedFile(req.file);
 
     return res.status(500).json({
       success: false,
@@ -149,7 +206,6 @@ export async function registerParticipant(req, res) {
     });
   }
 }
-
 
 export const getAllParticipants = async (req, res) => {
   try {
@@ -170,10 +226,6 @@ export const getAllParticipants = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch participants",
-      error:
-        process.env.NODE_ENV === "development"
-          ? error.message
-          : "Internal server error",
     });
   }
 };

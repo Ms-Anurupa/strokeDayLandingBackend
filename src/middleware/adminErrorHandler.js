@@ -3,7 +3,8 @@ export function adminErrorHandler(error, req, res, next) {
         return next(error);
     }
 
-    const statusCode = error.statusCode || 500;
+    // statusCode is set by our services; status is set by body-parser (bad JSON, too large).
+    const statusCode = error.statusCode || error.status || 500;
 
     if (statusCode >= 500) {
         console.error("API error:", error);
@@ -14,6 +15,8 @@ export function adminErrorHandler(error, req, res, next) {
         message:
             statusCode >= 500
                 ? "Internal server error"
-                : error.message || "Request failed",
+                : error.expose === false
+                    ? "Request failed"
+                    : error.message || "Request failed",
     });
 }

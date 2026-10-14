@@ -3,17 +3,22 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "../config/prisma.js";
 import { createAdminToken } from "../utils/adminToken.js";
+import { VIDEO_DIRECTORY } from "../middleware/upload.js";
 
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync("not-a-real-password", 12);
+
+// Field lists must match prisma/schema.prisma.
 const REGISTRATION_MODELS = {
     participants: {
         model: "participant",
+        idType: "string",
         searchableFields: [
             "fullName",
             "email",
             "phone",
             "registrationNumber",
             "city",
-            "organization",
+            "performanceTitle",
         ],
         editableFields: [
             "fullName",
@@ -22,61 +27,60 @@ const REGISTRATION_MODELS = {
             "age",
             "gender",
             "city",
-            "state",
-            "organization",
+            "talentCategory",
             "performanceTitle",
-            "performanceCategory",
-            "experience",
             "status",
-            "adminNotes",
         ],
-        statuses: ["pending", "approved", "rejected"],
+        statuses: ["PENDING", "APPROVED", "REJECTED"],
     },
 
     attendees: {
         model: "attendee",
-        searchableFields: [
-            "fullName",
-            "email",
-            "phone",
-            "registrationNumber",
-            "city",
-            "organization",
-        ],
-        editableFields: [
-            "fullName",
-            "email",
-            "phone",
-            "age",
-            "gender",
-            "city",
-            "state",
-            "organization",
-            "status",
-            "adminNotes",
-        ],
-        statuses: ["pending", "invited", "confirmed", "declined"],
+        idType: "int",
+        searchableFields: ["name", "email", "phone", "registrationNumber"],
+        editableFields: ["name", "email", "phone"],
+        statuses: [],
     },
 };
+
+function httpError(statusCode, message) {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    return error;
+}
 
 function getModel(type) {
     const config = REGISTRATION_MODELS[type];
 
     if (!config) {
-        const error = new Error("Invalid registration type");
-        error.statusCode = 400;
-        throw error;
+        throw httpError(400, "Invalid registration type");
     }
 
-    const model = prisma[config.model];
+    return { config, model: prisma[config.model] };
+}
 
-    if (!model) {
-        throw new Error(
-            `Prisma model "${config.model}" was not found. Check your schema and model name.`
-        );
+function parseId(config, id) {
+    if (config.idType === "int") {
+        const numericId = Number.parseInt(id, 10);
+
+        if (!Number.isInteger(numericId) || String(numericId) !== String(id)) {
+            throw httpError(404, "Registration not found");
+        }
+
+        return numericId;
     }
 
-    return { config, model };
+    return String(id);
+}
+
+function normalizeStatus(config, status) {
+    const value = String(status || "").trim().toUpperCase();
+
+    if (!config.statuses.includes(value)) {
+        throw httpError(400, "Invalid status value");
+    }
+
+    return value;
 }
 
 function parsePagination(query) {
@@ -93,7 +97,7 @@ function parsePagination(query) {
 
 function buildWhere(config, query) {
     const where = {};
-    const search = String(query.search || "").trim();
+    const search = String(query.search || "").trim().slice(0, 100);
 
     if (search) {
         where.OR = config.searchableFields.map((field) => ({
@@ -104,14 +108,8 @@ function buildWhere(config, query) {
         }));
     }
 
-    if (query.status) {
-        if (!config.statuses.includes(query.status)) {
-            const error = new Error("Invalid status filter");
-            error.statusCode = 400;
-            throw error;
-        }
-
-        where.status = query.status;
+    if (query.status && config.statuses.length) {
+        where.status = normalizeStatus(config, query.status);
     }
 
     return where;
@@ -126,27 +124,63 @@ function getEditableData(config, body) {
         }
     }
 
-    if (
-        Object.prototype.hasOwnProperty.call(data, "status") &&
-        !config.statuses.includes(data.status)
-    ) {
-        const error = new Error("Invalid status value");
-        error.statusCode = 400;
-        throw error;
+    for (const [field, value] of Object.entries(data)) {
+        if (typeof value === "string") {
+            data[field] = value.trim();
+        }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(data, "status")) {
+        data.status = normalizeStatus(config, data.status);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(data, "talentCategory")) {
+        const category = String(data.talentCategory).toLowerCase().replace(/-/g, "_");
+        if (!["singing", "dancing", "stand_up_comedy"].includes(category)) {
+            throw httpError(400, "Invalid talent category");
+        }
+        data.talentCategory = category;
+    }
+
+    for (const field of ["fullName", "name"]) {
+        if (Object.prototype.hasOwnProperty.call(data, field) && String(data[field]).length < 2) {
+            throw httpError(400, "Name must be at least 2 characters");
+        }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(data, "phone") && !/^[6-9]\d{9}$/.test(String(data.phone))) {
+        throw httpError(400, "Phone must be a valid 10-digit mobile number");
     }
 
     if (
-        Object.prototype.hasOwnProperty.call(data, "age") &&
-        data.age !== null &&
-        (!Number.isInteger(Number(data.age)) || Number(data.age) < 0)
+        Object.prototype.hasOwnProperty.call(data, "email") &&
+        !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(data.email))
     ) {
-        const error = new Error("Age must be a non-negative integer");
-        error.statusCode = 400;
-        throw error;
+        throw httpError(400, "Enter a valid email address");
     }
 
-    if (Object.prototype.hasOwnProperty.call(data, "age") && data.age !== null) {
-        data.age = Number(data.age);
+    for (const field of ["gender", "city", "performanceTitle"]) {
+        if (Object.prototype.hasOwnProperty.call(data, field) && data[field] === "") {
+            data[field] = null;
+        }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(data, "email")) {
+        data.email = String(data.email).toLowerCase();
+    }
+
+    if (Object.prototype.hasOwnProperty.call(data, "age")) {
+        if (data.age === null || data.age === "") {
+            data.age = null;
+        } else if (
+            !Number.isInteger(Number(data.age)) ||
+            Number(data.age) < 0 ||
+            Number(data.age) > 120
+        ) {
+            throw httpError(400, "Age must be a whole number between 0 and 120");
+        } else {
+            data.age = Number(data.age);
+        }
     }
 
     return data;
@@ -160,6 +194,8 @@ export async function loginAdmin({ email, password }) {
     });
 
     if (!admin || !admin.active) {
+        // Keep timing similar whether or not the account exists.
+        await bcrypt.compare(String(password || ""), DUMMY_PASSWORD_HASH);
         return null;
     }
 
@@ -189,16 +225,14 @@ export async function getDashboardStats() {
         totalParticipants,
         totalAttendees,
         pendingParticipants,
-        pendingAttendees,
         approvedParticipants,
-        confirmedAttendees,
+        rejectedParticipants,
     ] = await Promise.all([
         prisma.participant.count(),
         prisma.attendee.count(),
-        prisma.participant.count({ where: { status: "pending" } }),
-        prisma.attendee.count({ where: { status: "pending" } }),
-        prisma.participant.count({ where: { status: "approved" } }),
-        prisma.attendee.count({ where: { status: "confirmed" } }),
+        prisma.participant.count({ where: { status: "PENDING" } }),
+        prisma.participant.count({ where: { status: "APPROVED" } }),
+        prisma.participant.count({ where: { status: "REJECTED" } }),
     ]);
 
     return {
@@ -206,9 +240,8 @@ export async function getDashboardStats() {
         totalAttendees,
         totalRegistrations: totalParticipants + totalAttendees,
         pendingParticipants,
-        pendingAttendees,
         approvedParticipants,
-        confirmedAttendees,
+        rejectedParticipants,
     };
 }
 
@@ -239,16 +272,14 @@ export async function listRegistrations(type, query) {
 }
 
 export async function getRegistration(type, id) {
-    const { model } = getModel(type);
+    const { config, model } = getModel(type);
 
     const item = await model.findUnique({
-        where: { id },
+        where: { id: parseId(config, id) },
     });
 
     if (!item) {
-        const error = new Error("Registration not found");
-        error.statusCode = 404;
-        throw error;
+        throw httpError(404, "Registration not found");
     }
 
     return item;
@@ -259,21 +290,17 @@ export async function updateRegistration(type, id, body) {
     const data = getEditableData(config, body);
 
     if (Object.keys(data).length === 0) {
-        const error = new Error("No editable fields were supplied");
-        error.statusCode = 400;
-        throw error;
+        throw httpError(400, "No editable fields were supplied");
     }
 
     try {
         return await model.update({
-            where: { id },
+            where: { id: parseId(config, id) },
             data,
         });
     } catch (error) {
         if (error.code === "P2025") {
-            const notFound = new Error("Registration not found");
-            notFound.statusCode = 404;
-            throw notFound;
+            throw httpError(404, "Registration not found");
         }
 
         throw error;
@@ -281,12 +308,11 @@ export async function updateRegistration(type, id, body) {
 }
 
 async function removeParticipantVideo(participant) {
-    if (!participant.videoPath) return;
+    // Only locally stored uploads are deleted; external links are left alone.
+    if (!participant.videoUrl?.startsWith("/uploads/videos/")) return;
 
-    // Supports stored paths such as /uploads/videos/example.mp4.
-    const filename = path.basename(participant.videoPath);
-    const uploadDir = path.resolve(process.env.UPLOAD_DIR || "uploads/videos");
-    const videoPath = path.join(uploadDir, filename);
+    const filename = path.basename(participant.videoUrl);
+    const videoPath = path.join(VIDEO_DIRECTORY, filename);
 
     try {
         await fs.unlink(videoPath);
@@ -299,16 +325,16 @@ async function removeParticipantVideo(participant) {
 }
 
 export async function deleteRegistration(type, id) {
-    const { model } = getModel(type);
+    const { config, model } = getModel(type);
     const existing = await getRegistration(type, id);
+
+    await model.delete({ where: { id: parseId(config, id) } });
 
     if (type === "participants") {
         await removeParticipantVideo(existing);
     }
 
-    await model.delete({ where: { id } });
-
-    return { id };
+    return { id: existing.id };
 }
 
 export async function exportRegistrations(type, query = {}) {
